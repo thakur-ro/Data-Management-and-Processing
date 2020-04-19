@@ -1,0 +1,430 @@
+---
+title: "TRY"
+author: "Chetana"
+date: "4/8/2020"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## LOAD LIBRARY AND FILES
+
+```{r}
+library(readr)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(recommenderlab)
+library(lubridate)
+
+aisles <- read_csv("~/Downloads/instacart-market-basket-analysis/aisles.csv")
+departments <- read_csv("~/Downloads/instacart-market-basket-analysis/departments.csv")
+order_prior <- read_csv("~/Downloads/instacart-market-basket-analysis/order_products__prior.csv")
+order_train <- read_csv("~/Downloads/instacart-market-basket-analysis/order_products__train.csv")
+
+orders <- read_csv("~/Downloads/instacart-market-basket-analysis/orders.csv")
+products <- read_csv("~/Downloads/instacart-market-basket-analysis/products.csv")
+
+```
+
+## TIDY DATA FOR TRAIN
+
+```{r}
+
+# pick users with most orders
+
+df_prior <- order_prior %>% 
+  left_join(products) %>% 
+  select(product_id,order_id,product_name, department_id) 
+df_prior <- df_prior %>% 
+  left_join(orders) %>% 
+  select(order_id,product_id,product_name,department_id,user_id)
+df_prior <- df_prior %>% 
+  left_join(departments) %>%
+  select(order_id,product_id,product_name,department_id,department,user_id)
+
+frequent_users <- df_prior %>%
+  count(user_id, sort = TRUE) %>%
+  mutate(user_id = reorder(user_id,n)) %>%
+  top_n(200) %>% select(user_id)
+
+df_prior_try <- df_prior %>%
+  filter(user_id %in% frequent_users$user_id)
+
+df_prior_try <- df_prior_try %>% 
+  group_by(product_id) %>% 
+  mutate(times_ordered = n()) %>% 
+  filter(times_ordered > 50) %>%
+  ungroup(product_id) %>%
+  select(-times_ordered)
+
+```
+
+# TEST DATA FRAME
+
+```{r}
+df <- order_train %>% 
+  left_join(products) %>% 
+  select(product_id,order_id,product_name, department_id) 
+df <- df %>% 
+  left_join(orders) %>% 
+  select(order_id,product_id,product_name,department_id,user_id)
+df <- df %>% 
+  left_join(departments) %>%
+  select(order_id,product_id,product_name,department_id,department,user_id)
+df_try <- df %>% 
+  filter(user_id %in% frequent_users$user_id)
+
+```
+
+# TRAINING DATA MATRIX
+
+```{r}
+
+dept_mat <- df_prior_try %>% 
+  group_by(user_id, department) %>% 
+  distinct(department) %>%
+  select(department, user_id) %>% 
+  ungroup(user_id, department) %>%
+  mutate(value=1) %>%
+  spread(department, value, fill=0) %>%
+  select(-user_id)
+
+prod_mat <- df_prior_try %>% 
+  group_by(user_id, product_name) %>% 
+  distinct(product_name) %>%
+  select(product_name, user_id) %>% 
+  ungroup(user_id, product_name) %>%
+  mutate(value=1) %>%
+  spread(product_name, value, fill=0) %>%
+  select(-user_id)
+
+heatmap(as.matrix(dept_mat[1:50,1:19]), Colv=NA, Rowv=NA, scale='none',
+         ylab = "User Ids", main = "Departments ordered from")
+heatmap(as.matrix(prod_mat[1:50,1:50]), Colv=NA, Rowv=NA, scale='none',
+         ylab = "User Ids", main = "Products ordered")
+```
+
+# SCHEME BUILDING
+
+```{r}
+dept_mat <- dept_mat %>% as.matrix() %>% as("binaryRatingMatrix")
+image(dept_mat[1:50,])
+scheme <- dept_mat %>% 
+  evaluationScheme(method = "cross",
+                   k      = 5, 
+                   train  = 0.8,
+                   given  = -1)
+scheme
+```
+
+```{r}
+prod_mat <- prod_mat %>% as.matrix() %>% as("binaryRatingMatrix")
+image(prod_mat[1:50,])
+scheme_by_prod <- prod_mat %>% 
+  evaluationScheme(method = "cross",
+                   k      = 5, 
+                   train  = 0.8,
+                   given  = -1)
+scheme_by_prod
+```
+
+# ALGO COMPARISON
+
+```{r}
+algorithms <- list(
+  "association rules" = list(name  = "AR",
+                             param = list(supp = 0.5, conf = 0.03)),
+  "random items"      = list(name  = "RANDOM",  param = NULL),
+  "popular items"     = list(name  = "POPULAR", 
+                             param = NULL),
+  "item-based CF"     = list(name  = "IBCF", 
+                             param = list(method = "Cosine",k = 5)),
+  "user-based CF"     = list(name  = "UBCF", 
+                        param = list(method = "Cosine", nn = 500))
+                   )
+dept_results <- recommenderlab::evaluate(scheme, 
+                                    algorithms, 
+                                    type  = "topNList", 
+                                    n     = c(1,3,5,10)
+                                    )
+avg(dept_results)
+plot(dept_results)
+plot(dept_results, "prec/rec", legend="topright")
+
+```
+
+
+```{r}
+prod_results <- recommenderlab::evaluate(scheme_by_prod, 
+                                    algorithms, 
+                                    type  = "topNList", 
+                                    n     = c(1, 3, 5, 10)
+                                    )
+avg(prod_results)
+plot(prod_results)
+plot(prod_results, "prec/rec", legend="topright")
+```
+
+```{r}
+avg_conf_matr <- function(results) {
+  tmp <- results %>%
+    getConfusionMatrix()  %>%  
+    as.list() 
+    as.data.frame(Reduce("+",tmp) / length(tmp)) %>% 
+    mutate(n = c(1, 3, 5, 10)) %>%
+    select('n', 'precision', 'recall', 'TPR', 'FPR') 
+}
+
+results_tbl <- prod_results %>%
+  map(avg_conf_matr) %>% 
+  enframe() %>%
+  unnest()
+
+results_tbl %>%
+  ggplot(aes(FPR, TPR, 
+             colour = fct_reorder2(as.factor(name), 
+                      FPR, TPR))) +
+  geom_line() +
+  geom_label(aes(label = n))  +
+  labs(title = "ROC curves on product rating matrix", colour = "Model") +
+  theme_grey(base_size = 14)
+
+
+results_dept_tbl <- dept_results %>%
+  map(avg_conf_matr) %>% 
+  enframe() %>%
+  unnest()
+
+results_dept_tbl %>%
+  ggplot(aes(FPR, TPR, 
+             colour = fct_reorder2(as.factor(name), 
+                      FPR, TPR))) +
+  geom_line() +
+  geom_label(aes(label = n))  +
+  labs(title = "ROC curves on department rating matrix", colour = "Model") +
+  theme_grey(base_size = 14)
+```
+
+# IBCF on DEPT
+
+```{r}
+dept_ids_trained_on <- unique(df_prior_try$department_id)
+new_dept_cols <- setdiff(dept_ids_trained_on, df_try$department_id)
+
+dept_test_order <- c("produce",
+                     "beverages")
+
+mat_dept_test<- df_try %>% 
+  filter(department_id %in% dept_ids_trained_on) %>%
+  select(department) %>%
+  unique() %>%
+  mutate(value=as.numeric(department %in% dept_test_order))%>%
+  spread(key=department,value=value) 
+
+for (col in new_dept_cols){
+  mat_dept_test$new_col <- rep(0, nrow(mat_dept_test))
+  names(mat_dept_test)[names(mat_dept_test) == "new_col"] <- col
+}
+  
+mat_dept_test <- mat_dept_test %>%
+  as.matrix() %>%
+  as("binaryRatingMatrix")
+
+recomm_UBCF_dept <- Recommender(getData(scheme, 'train'),
+                       method = "UBCF")
+recomm_UBCF_dept
+
+pred_UBCF_dept <- predict(recomm_UBCF_dept,
+                newdata = mat_dept_test,
+                n= 5)
+dept_IBCF_prediction <- as(pred_UBCF_dept,'list')
+dept_IBCF_prediction
+
+# OUTPUT--------------------------------------------------
+#Recommender of type ‘IBCF’ for ‘binaryRatingMatrix’ 
+#learned using 298 users.
+#$`1`
+#[1] "dairy eggs" "frozen"     "pantry"     "beverages" 
+
+#Recommendations as ‘topNList’ with n = 4 for 1 users.
+
+##VALIDATION of the above prediction------------------------
+test_order_ids <- df_try %>%
+  group_by(order_id) %>% 
+  filter(department %in% dept_test_order) %>% 
+  select(order_id)
+
+test_orders <- df_try %>% 
+  filter(order_id %in% test_order_ids$order_id)
+
+test_orders %>% 
+  group_by(department) %>% 
+  count(sort = TRUE) %>% 
+  ungroup() %>%
+  mutate(department = reorder(department, n)) %>%
+  top_n(10) %>%
+  ggplot() + geom_col(aes(department,n), fill = "darkred") + coord_flip() +
+  labs(title = "Most frequent departments ordered from along with produce and beverages")
+
+
+```
+
+```{r}
+product_ids_trained_on <- unique(df_prior_try$product_name)
+new_cols <- setdiff(product_ids_trained_on, df_try$product_name)
+
+prod_test_order <- c("Ancient Grain Blueberry Hemp Granola",
+                     "Tuna Salad",
+                     "Organic Raspberries",
+                     "Ground Turkey Breast",
+                     "Organic Sour Cream")
+
+prod_mat_test <- df_try %>% 
+  filter(product_name %in% product_ids_trained_on) %>%
+  select(product_name) %>%
+  unique() %>%
+  mutate(value=as.numeric(product_name %in% prod_test_order))%>%
+  spread(key=product_name,value=value)
+
+for (col in new_cols){
+  prod_mat_test$new_col <- rep(0, nrow(prod_mat_test))
+  names(prod_mat_test)[names(prod_mat_test) == "new_col"] <- col
+}
+
+prod_mat_test <- prod_mat_test %>%
+  as.matrix()%>%
+  as("binaryRatingMatrix")
+
+
+recomm_UBCF <- Recommender(data = getData(scheme_by_prod, 'train'),
+                       method = "UBCF")
+recomm_UBCF
+
+pred_UBCF <- predict(object = recomm_UBCF,
+                     newdata = prod_mat_test,
+                     n= 10)
+pred_UBCF_product <- as(pred_UBCF,'list')
+
+pred_UBCF_product
+
+##----------------VALIDATION of the above prediction------------------------
+prod_test_order_ids <- df_try %>%
+  group_by(order_id) %>% 
+  filter(product_name %in% prod_test_order) %>% 
+  select(order_id)
+
+prod_test_orders <- df_try %>% 
+  filter(order_id %in% prod_test_order_ids$order_id)
+
+prod_test_orders %>% 
+  group_by(product_name) %>% 
+  mutate(count = n()) %>% 
+  ungroup() %>%
+  mutate(product_name = reorder(product_name, count)) %>%
+  top_n(50) %>%
+  ggplot() + geom_col(aes(product_name,count, fill = department), fill = "darkred") + coord_flip() + 
+  labs(x = "product name", title = "Most frequent products ordered along with the test products")
+
+```
+
+## Similarity on DEPT MATRIX
+
+```{r}
+user_similarity_by_dept <- as.matrix(similarity(dept_mat, 
+                                                method = "cosine",
+                                                which = "users"))
+
+#1
+#plot.new()
+#heatmap(user_similarity_by_dept[1:10,1:10],Colv = NA, Rowv = NA, 
+ #       scale="column", xlab="something", ylab="", main="A title", 
+ #       col= colorRampPalette(brewer.pal(8, "Reds"))(5)) 
+
+#legend(x="topleft", legend=c("min", "ave", "max"), 
+#     fill=colorRampPalette(brewer.pal(8, "Oranges"))(3))
+
+#2
+#red=rgb(1,0,0); yellow=rgb(1,1,0); blue=rgb(0,0,1); white=rgb(1,1,1)
+#RtoYrange<-colorRampPalette(c(red, red ) )
+#YtoWrange<-colorRampPalette(c(red, white) ) 
+#m <- melt(user_similarity_by_dept[1:10,1:10]) 
+#p <- ggplot(data=m, aes(x=Var1, y=Var2, fill=value)) + geom_tile()
+#p + scale_fill_gradient2(low="red", mid=RtoYrange(10), high=YtoWrange(10)) 
+
+#3
+heatmap(user_similarity_by_dept[1:20,1:20],
+        main = "Similarity among Users on the basis of Department",
+        xlab = "User Ids", 
+        ylab = "User Ids",
+        keep.dendro = FALSE,
+        verbose = getOption("verbose"),
+        Colv=NA, Rowv=NA, scale='none')
+#image(user_similarity_by_dept[1:10,1:10], main = "User Similarity DEPT")
+
+items_sim_by_dept <- as.matrix(similarity(dept_mat, method = "cosine", which = "items"))
+#image(items_sim_by_dept[1:19,1:19], main = "Item Similarity DEPT")
+heatmap(items_sim_by_dept[1:19,1:19], 
+        main = "Similarity among Departments",
+        keep.dendro = FALSE,
+        verbose = getOption("verbose"),
+        Colv=NA, Rowv=NA, scale='none')
+
+library(gplots)
+heatmap.2(items_sim_by_dept[1:19,1:19],dendrogram='none', Rowv=TRUE, Colv=TRUE,trace='none')
+```
+
+## Similarity on PRODUCT MATRIX
+
+```{r}
+user_similarity_by_product <- as.matrix(similarity(prod_mat, 
+                                                method = "cosine",
+                                                which = "users"))
+#3
+heatmap(user_similarity_by_product[1:20,1:20],
+        main = "Similarity among Users based on Products ordered",
+        keep.dendro = FALSE,
+        verbose = getOption("verbose"),Colv=NA, Rowv=NA, scale='none')
+#image(user_similarity_by_product[1:10,1:10], main = "User Similarity Product")
+
+items_sim_by_prod <- as.matrix(similarity(prod_mat, 
+                                          method = "cosine", 
+                                          which = "items"))
+randIndices <- sample(1:1600, 20, replace=TRUE)
+
+heatmap(items_sim_by_prod[randIndices,randIndices], 
+        main = "Similarity among Products",
+        keep.dendro = FALSE,
+        verbose = getOption("verbose"),Colv=NA, Rowv=NA, scale='none')
+#image(items_sim_by_prod[1:20,1:20], main = "Item Similarity Product")
+
+```
+
+## CLUSTERING USELESS
+
+```{r}
+data <- orders %>% filter(eval_set == "prior") %>%
+  filter(!is.na(order_dow)) %>%
+  filter(!is.na(order_hour_of_day)) %>%
+  filter(!is.na(days_since_prior_order)) %>%
+  select(-eval_set) %>%
+  group_by(user_id) %>%
+  mutate(number_of_orders = max(order_number))
+
+data$order_dow <- as.factor(data$order_dow)
+data$order_hour_of_day <- as.factor(data$order_hour_of_day)
+data$order_id <- as.character(data$order_id)
+data$user_id <- as.character(data$user_id)
+
+set.seed(20)
+cluster <- kmeans(data[,4:7],5, nstart = 20)
+cluster
+
+data$cluster <- as.factor(cluster$cluster)
+ggplot(data[1:50000,])+ geom_point(aes(number_of_orders,days_since_prior_order, color = cluster))
+ggplot(data[1:10000,])+ geom_point(aes(number_of_orders, order_hour_of_day,color = cluster))
+
+
+```
