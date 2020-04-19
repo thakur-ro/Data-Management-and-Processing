@@ -27,6 +27,324 @@ orders <- read_csv("~/Downloads/instacart-market-basket-analysis/orders.csv")
 products <- read_csv("~/Downloads/instacart-market-basket-analysis/products.csv")
 
 ```
+***EXPLORATORY DATA ANALYSIS***
+
+#Looking at Distribution of orders by hour of day and day of week
+```{r}
+#Removing NAs
+orders<-na.omit(orders)
+orders$order_dow<-orders$order_dow+1
+orders$order_dow<-wday(orders$order_dow,label=TRUE,week_start = getOption("lubridate.week.start", 7))
+orders<-mutate(orders,order_dow=as.factor(order_dow))
+plot1<-orders%>%
+  group_by(order_hour_of_day,order_dow)%>%
+  summarise(count=n())%>%
+  ggplot(mapping = aes(x =order_hour_of_day, y = count, group=order_dow)) +
+  geom_line(stat = 'identity', aes(color = order_dow))+
+  labs(x = 'Hour of day', y = 'No. Of Orders',color="Day of week")
+print(plot1)
+```
+#number of days since prior order
+```{r}
+plot2<-orders%>%
+  ggplot()+geom_bar(aes(x=as.factor(days_since_prior_order)))+
+  labs(x="no. of days since prior order", y="no. of orders")
+print(plot2)  
+```
+#Proportions of Reorder
+#In prior set
+```{r}
+plot3<-orders_prior%>%
+  group_by(reordered)%>%
+  summarise(count=n())%>%
+  mutate(proportion=round(count/sum(count),2))%>%
+  ggplot(aes(x=as.factor(reordered),y=proportion,fill=as.factor(reordered)))+
+  geom_col(width=0.5)+
+  labs(x="Reordered",y="Proportion",fill="Reorder")+
+  geom_text(aes(label=proportion),vjust=-0.5)
+print(plot3)
+
+#In train set
+plot4<-orders_train%>%
+  group_by(reordered)%>%
+  summarise(count=n())%>%
+  mutate(proportion=round(count/sum(count),2))%>%
+  ggplot(aes(x=as.factor(reordered),y=proportion,fill=as.factor(reordered)))+
+  geom_col(width=0.5)+
+  labs(x="Reordered",y="Proportion",fill="Reorder")+
+  geom_text(aes(label=proportion),vjust=-0.5)
+print(plot4)
+```
+#Top 20 products that have highest probability of reorder
+```{r}
+plot5<-orders_prior %>%
+  group_by(product_id) %>%
+  summarise(prop_reorder=round(mean(reordered),4)) %>%
+  arrange(desc(prop_reorder)) %>%
+  left_join(products,by=c("product_id"="product_id"))%>%
+  select(product_id,product_name,prop_reorder)%>%
+  head(n=20)%>%
+  ggplot(aes(x=reorder(product_name,prop_reorder),
+                        y=prop_reorder))+
+  geom_col(fill="darkred")+
+  coord_flip()+labs(x="Product Name", y="Proportion of reorder")+
+  geom_text(aes(label=prop_reorder),hjust=1,color="white")+
+  ggtitle("TOP 20 products with highest proportion of reorder")
+print(plot5)
+```
+#Top 10 departments by number of orders 
+```{r}
+order_products<-orders_prior%>%
+  left_join(products)
+plot6<-order_products%>%
+  group_by(department_id)%>%
+  summarise(count=n())%>%
+  left_join(departments)%>%
+  arrange(desc(count))%>%
+  head(n=10)%>%
+  ggplot(aes(x=reorder(department,-count),y=count))+
+  geom_col(fill="darkred")+
+  labs(x="Department Name", y="Number of Orders")+
+  geom_text(aes(label=count),hjust=0.5,vjust=1,color="white")+
+  ggtitle("TOP 10 Departments based on number of Orders")
+ print(plot6) 
+```
+#Treemap for hierarchy between department and aisle
+```{r}
+
+tmp <- order_products %>% group_by(department_id, aisle_id) %>% summarize(n=n())
+tmp <- tmp %>% left_join(departments,by="department_id")
+tmp <- tmp %>% left_join(aisles,by="aisle_id")
+
+tmp2<-order_products %>% 
+  group_by(product_id) %>% 
+  summarize(count=n()) %>% 
+  left_join(products,by="product_id") %>% 
+  ungroup() %>% 
+  group_by(department_id,aisle_id) %>% 
+  summarize(sumcount = sum(count)) %>% 
+  left_join(tmp, by = c("department_id", "aisle_id")) %>% 
+  mutate(onesize = 1)
+
+treemap(tmp2,index=c("department","aisle"),vSize="sumcount",title="",palette="Set3",border.col="#FFFFFF")
+```
+In the graph below as number of order increases probability of reorder also increases. 
+But we can see ceiling effect in the plot .
+```{r}
+plot7<-order_products%>%
+  group_by(product_id)%>%
+  summarise(prop_reorder=mean(reordered),count=n())%>%
+  ggplot(aes(x=count,y=prop_reorder))+
+  geom_jitter(color="darkred",alpha=0.1)+geom_smooth(color="black")+
+  labs(x="Number of orders",y="proportion of reorder")+
+  scale_x_continuous(limits=c(0,89000))+
+  ggtitle("Number of orders VS Proportion of reorder")
+print(plot7)
+```
+Top 10 products added to cart first
+```{r}
+df1<-order_products%>%group_by(order_id)%>%
+  summarise(count=n())%>%
+  filter(count>3)%>%
+  arrange(count)%>%
+  left_join(order_products)
+plot8<-df1%>%
+  group_by(product_name, add_to_cart_order) %>% 
+  summarize(count = n()) %>% mutate(pct=round(count/sum(count),2)) %>% 
+  filter(add_to_cart_order == 1, count>10) %>% 
+  arrange(desc(pct)) %>% 
+  select(product_name, pct, count) %>% 
+  ungroup() %>% 
+  top_n(10, wt=pct)%>%
+  ggplot(aes(x=reorder(product_name,pct), y=pct))+
+  geom_bar(stat="identity",fill="darkred")+coord_flip()+
+  labs(x="Product Name",y="Percentage")+
+  geom_text(aes(label=pct),hjust=1,color="white")+
+  ggtitle("Top 10 products added to cart first")
+print(plot8)
+```
+There are 13,84,617 products in the order_products_train file and 3,24,34,489 products in the order_products_prior file. Both files have 4 feature columns:
+The ID of the order (order_id)
+The ID of the product (product_id)
+The ordering of that product in the order (add_to_cart_order)
+Whether that product was reordered (reordered).
+
+```{r insta_combining_files}
+#we combine both files to find the unique items
+order_products <- rbind(order_products_train,order_products_prior)
+#str(order_products)
+#unique customers
+order_products %>% distinct(order_id) %>% count()
+#unique products
+order_products %>% distinct(product_id) %>% count()
+```
+
+Overall, there are 33,46,083 unique orders for 49,685 unique products. 
+```{r,warning=FALSE,message=FALSE,insta_ordernumbers}
+# How many items were ordered the most
+order_products %>% group_by(order_id)  %>% count()%>% group_by(n) %>% count() %>% head(20)%>%
+  ggplot() + aes(x = reorder(n,nn),nn) + 
+  geom_col(stat = "identity",fill = "darkred") +
+    coord_flip() + 
+  labs(title = "       Number of items ordered in a Transaction ") +
+ xlab("Number of items in a Transaction") +ylab("No=umber of transactions")
+```
+We can observe in the plot above that people usually order around 5 or 6 products in an order.   
+
+# most reordered items
+```{r,warning=FALSE,message=FALSE,insta_most_reordered}
+order_products %>% 
+  group_by(product_id )%>% 
+  summarise(x=sum(reordered))%>% arrange(desc(x) ) %>% 
+  left_join(products) %>% 
+  head(20) %>%ggplot() + aes(x = reorder(product_name,x),x) + geom_col(stat = "identity",fill = "darkred") + coord_flip() + labs(title = "       Most Frequently Reordered items     ") +xlab("Product name") +ylab("Frequency")  +
+  geom_text(aes(label=x), hjust=1, color = "white")
+
+```
+```{r,warning=FALSE,message=FALSE,insta_orders}
+
+str(orders)
+head(orders,20)
+```
+
+**Generating frequent item sets and association rules **
+
+```{r dataviz}
+# get the shopping baskets
+order_baskets <- order_products %>% 
+  group_by(order_id) %>% count()
+#ordet_baskets
+order_baskets %>% group_by(n) %>% count %>%  
+  head(15) %>%ggplot() + aes(reorder(n,nn),nn)+geom_col(fill = "darkred")  + coord_flip() +
+  geom_text(aes(label=nn), hjust=1, color = "white")+ 
+  labs(title = "            Number of Items in a Basket") +
+  xlab("Number of Items in a Basket") +
+  ylab("Frequency") 
+```
+
+We see that mostly peoply buy 3 to 7 items in an order.
+
+**Frequent Itemsets***
+
+Now, lets compute the frequent itemsets. We decrease the support threshold to take into account the small probability of observing a frequent itemset of at least size 2.   
+With a support threshold of 0.008 (~25k baskets), we observe frequent pairs 
+
+
+```{r,insta_frequent_itemsets}
+support <- 0.01
+itemsets <- apriori(transactions, parameter = list(target = "frequent itemsets", supp=support, minlen=2), control = list(verbose = FALSE))
+
+par(mar=c(5,18,2,2)+.1)
+sets_order_supp <- DATAFRAME(sort(itemsets, by="support", decreasing = F))
+barplot(sets_order_supp$support, names.arg=sets_order_supp$items, xlim=c(0,0.02), horiz = T, las = 2, cex.names = .8, main = "Frequent Itemsets of size = 2",col="darkred",border="darkred")
+mtext(paste("support:",support), padj = .8)
+```
+ We observe that Bananas/Bag of Organic Bananas are most paired up items! Each of the eight pairs with highest support contains bananas. Nearly all of the items are either fruits or vegetables. There is just one frequent pair that contains milk or spinach. 
+ 
+
+```{r insta_baskets}
+order_baskets <- order_products %>% 
+  inner_join(products, by="product_id") %>% 
+  group_by(order_id) %>%
+  summarise(basket = as.vector(list(product_name)))
+```
+
+```{r insta_transactions}
+transactions <- as(order_baskets$basket, "transactions")
+```
+
+We determine which items are frequent. We set the support threshold to 0.02, that means an item will be considered as frequent iff at least 2 percent of all the baskets contain it. So in our case, an item will be considered as being frequent if it is contained in more than 64,000 baskets.
+
+```{r,insta_frequent_items}
+item_frequencies <- itemFrequency(transactions, type="a")
+support <- 0.01
+freq_items <- sort(item_frequencies, decreasing = F)
+freq_items <- freq_items[freq_items>support*length(transactions)] %>% tail(20)
+tail(freq_items)
+par(mar=c(5,10,2,2)); options(scipen=5)
+barplot(freq_items, horiz=T, las=1, main="Frequent Items ", xlab = "Number of orders",cex.names=.8, xlim=c(0,500000),col = "darkred",border="darkred")
+mtext(paste("support:",support), padj = .8)
+abline(v=support*length(transactions), col="white")
+#glimpse(item_frequencies)
+
+```
+**Association Rules**   
+We use a low support threshold and a high confidence to generate strong rules even for items that are less frequent.
+
+```{r,insta_rules1}
+rules1 <- apriori(transactions, parameter = list(supp = 0.00001, conf = 0.6, maxlen=3), control = list(verbose = FALSE))
+summary(quality(rules1))
+```
+```{r, insta_plot_rules1}
+
+plot(rules1, col=sequential_hcl(4, palette = "Reds 3"),jitter=0)
+
+
+```
+
+
+We see some rules with a large lift value ,indicating a strong association between the items. Let’s see the top 5 rules by lift.
+
+
+
+```{r,insta_rules1_lift}
+inspect(sort(rules1, by="lift")[1:5])
+```
+Its odd that we do not see any rules with bananas as expected . As we saw earlier that Bananas were present in top 8 frequest itemsets.
+Let’s see the top 5 rules by confidence.
+```{r,insta_rules1_conf}
+inspect(sort(rules1, by="confidence")[1:5])
+```
+Its odd that, again,  we do not see any rules with bananas.
+
+
+```{r, insta_graph_rules1}
+plot(head(sort(rules1 , by="lift"),10), method="graph", control=list(type="items"))
+```
+
+
+
+We will try some other sets of rules:
+Here Next, we increase the support and decrease confidence to get rules of some more frequent items but with less confidence.
+```{r, insta_rules2}
+rules2 <- apriori(transactions, parameter = list(supp = 0.001, conf = 0.4, maxlen=3), control = list(verbose = FALSE))
+plot(rules2, col=sequential_hcl(4, palette = "Reds 3"),jitter=0)
+```
+
+
+
+
+```{r, insta_rules2_lift}
+inspect(sort(rules2, by="lift")[1:5])
+
+```
+
+checking by confidence
+```{r, insta_rules2_conf}
+inspect(sort(rules2, by="confidence")[1:5])
+```
+
+```{r, insta_graph_rules2}
+plot(head(sort(rules2 , by="lift"),10), method="graph", control=list(type="items"))
+```
+
+Finally, lets further increase support and decrease confidence
+```{r , insta_rules3}
+rules3 <- apriori(transactions, parameter = list(supp = 0.01, conf = 0.1, maxlen=3), control = list(verbose = FALSE)) 
+plot(rules3, col=sequential_hcl(4, palette = "Reds 3"),jitter=0)
+```
+```{r , insta_plot_rules3_lift}
+inspect(sort(rules3, by="lift")[1:5])
+```
+```{r, insta_plot_rules3_conf}
+inspect(sort(rules3, by="confidence")[1:5])
+
+```
+```{r , insta_graph_rules3}
+plot(head(sort(rules3 , by="lift"),10), method="graph", control=list(type="items"))
+```
+
+***Recommender system***
 
 ## TIDY DATA FOR TRAIN
 
