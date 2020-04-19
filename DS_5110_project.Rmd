@@ -1,7 +1,6 @@
 ---
-title: "TRY"
-author: "Chetana"
-date: "4/8/2020"
+title: "Predicting Next Purchase of an Instacart Consumer"
+date: "4/19/2020"
 output: pdf_document
 ---
 
